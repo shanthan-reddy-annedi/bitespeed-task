@@ -1,11 +1,10 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
 import { ContactService } from './contact.service';
 import { Contact } from './entities/contact.entity';
 import { IdentifyRequestDto } from './dto/identify-request.dto';
 
-type MockRepository<T = any> = {
+type MockRepository<> = {
   create: jest.Mock;
   save: jest.Mock;
   find: jest.Mock;

@@ -13,7 +13,7 @@ import {
 @ValidatorConstraint({ name: 'atLeastOneField', async: false })
 class AtLeastOneFieldConstraint implements ValidatorConstraintInterface {
   validate(_: unknown, args: ValidationArguments) {
-    const obj = args.object as any;
+    const obj = args.object as IdentifyRequestDto;
     return Boolean(obj.email || obj.phoneNumber);
   }
 
@@ -23,7 +23,7 @@ class AtLeastOneFieldConstraint implements ValidatorConstraintInterface {
 }
 
 function AtLeastOneField(validationOptions?: ValidationOptions) {
-  return (object: Object, propertyName: string): void => {
+  return (object: object, propertyName: string): void => {
     registerDecorator({
       target: object.constructor,
       propertyName,
