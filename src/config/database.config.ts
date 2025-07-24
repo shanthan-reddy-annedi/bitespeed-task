@@ -4,6 +4,19 @@ import * as dotenv from 'dotenv';
 dotenv.config();
 
 export const getDatabaseConfig = (): TypeOrmModuleOptions => {
+  const dbUrl = process.env.DATABASE_URL;
+
+  if (dbUrl) {
+    return {
+      type: 'postgres',
+      url: dbUrl,
+      entities: [__dirname + '/../**/*.entity{.ts,.js}'],
+      synchronize: process.env.DB_SYNC === 'true' ? true : false,
+      logging: process.env.DB_LOGGING === 'true' ? true : false,
+      ssl:
+        process.env.DB_SSL === 'true' ? { rejectUnauthorized: false } : false,
+    };
+  }
   return {
     type: 'postgres',
     host: process.env.DB_HOST || 'localhost',
@@ -14,11 +27,6 @@ export const getDatabaseConfig = (): TypeOrmModuleOptions => {
     entities: [__dirname + '/../**/*.entity{.ts,.js}'],
     synchronize: process.env.DB_SYNC === 'true' || true,
     logging: process.env.DB_LOGGING === 'true' || false,
-    ssl:
-      process.env.DB_SSL === 'true'
-        ? {
-            rejectUnauthorized: false,
-          }
-        : false,
+    ssl: process.env.DB_SSL === 'true' ? { rejectUnauthorized: false } : false,
   };
 };
