@@ -12,7 +12,8 @@ export class ContactController {
   @Post()
   @ApiOperation({
     summary: 'Identify and consolidate contact information',
-    description: 'Identifies a person based on email or phone number and returns consolidated contact information including primary and secondary contacts.',
+    description:
+      'Identifies a person based on email or phone number and returns consolidated contact information including primary and secondary contacts.',
   })
   @ApiResponse({
     status: 200,
@@ -21,7 +22,14 @@ export class ContactController {
   })
   @ApiResponse({
     status: 400,
-    description: 'Bad request - at least one of email or phoneNumber must be provided',
+    description: 'Bad request - validation failed',
+    schema: {
+      example: {
+        message: ['At least one of email or phoneNumber must be provided'],
+        error: 'Bad Request',
+        statusCode: 400,
+      },
+    },
   })
   async identify(
     @Body() body: IdentifyRequestDto,
@@ -29,4 +37,3 @@ export class ContactController {
     return this.contactService.identifyContact(body);
   }
 }
- 

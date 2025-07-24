@@ -9,92 +9,205 @@ import { IdentifyResponseDto } from './dto/identify-response.dto';
 export class ContactService {
   constructor(
     @InjectRepository(Contact)
-    private contactRepo: Repository<Contact>,
+    private readonly contactRepository: Repository<Contact>,
   ) {}
 
   async identifyContact(
     input: IdentifyRequestDto,
   ): Promise<IdentifyResponseDto> {
     const { email, phoneNumber } = input;
-
-    const existingContacts = await this.contactRepo.find({
-      where: [{ email }, { phoneNumber }],
-    });
-
-    let allRelatedContacts: Contact[] = [];
+    const existingContacts = await this.findContactsByEmailOrPhone(
+      email,
+      phoneNumber,
+    );
 
     if (existingContacts.length === 0) {
-      const newContact = this.contactRepo.create({ email, phoneNumber });
-      await this.contactRepo.save(newContact);
-      return {
-        contact: {
-          primaryContatctId: newContact.id,
-          emails: [newContact.email].filter(Boolean),
-          phoneNumbers: [newContact.phoneNumber].filter(Boolean),
-          secondaryContactIds: [],
-        },
-      };
+      return this.createNewPrimaryContact(email, phoneNumber);
     }
 
-    const contactIdsToSearch = new Set<number>();
-    for (const contact of existingContacts) {
+    const relatedContacts = await this.findAllRelatedContacts(existingContacts);
+    const primaryContact = this.findOldestPrimaryContact(relatedContacts);
+
+    await this.createSecondaryContactIfNeeded(
+      email,
+      phoneNumber,
+      primaryContact.id,
+      relatedContacts,
+    );
+
+    const updatedRelatedContacts =
+      await this.findAllRelatedContacts(existingContacts);
+
+    return this.buildContactResponse(primaryContact, updatedRelatedContacts);
+  }
+
+  private async findContactsByEmailOrPhone(
+    email?: string,
+    phoneNumber?: string,
+  ): Promise<Contact[]> {
+    const queryBuilder = this.contactRepository.createQueryBuilder('contact');
+
+    if (email && phoneNumber) {
+      queryBuilder.where(
+        'contact.email = :email OR contact.phoneNumber = :phoneNumber',
+        {
+          email,
+          phoneNumber,
+        },
+      );
+    } else if (email) {
+      queryBuilder.where('contact.email = :email', { email });
+    } else if (phoneNumber) {
+      queryBuilder.where('contact.phoneNumber = :phoneNumber', { phoneNumber });
+    } else {
+      return [];
+    }
+
+    return queryBuilder.getMany();
+  }
+
+  private async createNewPrimaryContact(
+    email?: string,
+    phoneNumber?: string,
+  ): Promise<IdentifyResponseDto> {
+    const newContact = this.contactRepository.create({ email, phoneNumber });
+    await this.contactRepository.save(newContact);
+
+    return {
+      contact: {
+        primaryContatctId: newContact.id,
+        emails: email ? [email] : [],
+        phoneNumbers: phoneNumber ? [phoneNumber] : [],
+        secondaryContactIds: [],
+      },
+    };
+  }
+
+  private async findAllRelatedContacts(
+    contacts: Contact[],
+  ): Promise<Contact[]> {
+    const primaryIds = this.extractPrimaryContactIds(contacts);
+
+    if (primaryIds.size === 0) {
+      return contacts;
+    }
+
+    return this.contactRepository.find({
+      where: [{ id: In([...primaryIds]) }, { linkedId: In([...primaryIds]) }],
+    });
+  }
+
+  private extractPrimaryContactIds(contacts: Contact[]): Set<number> {
+    const contactIds = new Set<number>();
+
+    for (const contact of contacts) {
       if (contact.linkPrecedence === 'primary') {
-        contactIdsToSearch.add(contact.id);
-      } else {
-        contactIdsToSearch.add(contact.linkedId);
+        contactIds.add(contact.id);
+      } else if (contact.linkedId) {
+        contactIds.add(contact.linkedId);
       }
     }
 
-    allRelatedContacts = await this.contactRepo.find({
-      where: [
-        { id: In([...contactIdsToSearch]) },
-        { linkedId: In([...contactIdsToSearch]) },
-      ],
-    });
+    return contactIds;
+  }
 
-    const primaryContact = allRelatedContacts
-      .filter((c) => c.linkPrecedence === 'primary')
+  private findOldestPrimaryContact(contacts: Contact[]): Contact {
+    return contacts
+      .filter((contact) => contact.linkPrecedence === 'primary')
       .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())[0];
+  }
 
-    const alreadyHasEmail = allRelatedContacts.some((c) => c.email === email);
-    const alreadyHasPhone = allRelatedContacts.some(
-      (c) => c.phoneNumber === phoneNumber,
-    );
-
-    if (!alreadyHasEmail || !alreadyHasPhone) {
-      const newContact = this.contactRepo.create({
-        email,
-        phoneNumber,
-        linkedId: primaryContact.id,
-        linkPrecedence: 'secondary',
-      });
-      await this.contactRepo.save(newContact);
-      allRelatedContacts.push(newContact);
+  private async createSecondaryContactIfNeeded(
+    email?: string,
+    phoneNumber?: string,
+    primaryContactId?: number,
+    existingContacts: Contact[] = [],
+  ): Promise<void> {
+    if (!primaryContactId || (!email && !phoneNumber)) {
+      return;
     }
 
-    const emails = Array.from(
-      new Set(allRelatedContacts.map((c) => c.email).filter(Boolean)),
+    const hasEmail =
+      email && existingContacts.some((contact) => contact.email === email);
+    const hasPhone =
+      phoneNumber &&
+      existingContacts.some((contact) => contact.phoneNumber === phoneNumber);
+
+    const needsNewSecondary =
+      (email && !hasEmail) || (phoneNumber && !hasPhone);
+
+    const exactMatchExists = existingContacts.some(
+      (contact) =>
+        (email === contact.email || (!email && !contact.email)) &&
+        (phoneNumber === contact.phoneNumber ||
+          (!phoneNumber && !contact.phoneNumber)),
     );
-    const phoneNumbers = Array.from(
-      new Set(allRelatedContacts.map((c) => c.phoneNumber).filter(Boolean)),
+
+    if (needsNewSecondary && !exactMatchExists) {
+      const newSecondaryContact = this.contactRepository.create({
+        email: !hasEmail ? email : undefined,
+        phoneNumber: !hasPhone ? phoneNumber : undefined,
+        linkedId: primaryContactId,
+        linkPrecedence: 'secondary',
+      });
+
+      await this.contactRepository.save(newSecondaryContact);
+    }
+  }
+
+  private buildContactResponse(
+    primaryContact: Contact,
+    allContacts: Contact[],
+  ): IdentifyResponseDto {
+    const uniqueEmails = this.extractUniqueValues(allContacts, 'email');
+    const uniquePhoneNumbers = this.extractUniqueValues(
+      allContacts,
+      'phoneNumber',
     );
-    const secondaryContactIds = allRelatedContacts
-      .filter((c) => c.linkPrecedence === 'secondary')
-      .map((c) => c.id);
+    const secondaryContactIds = allContacts
+      .filter((contact) => contact.linkPrecedence === 'secondary')
+      .map((contact) => contact.id);
+
+    // Ensure primary contact values appear first in the lists
+    const orderedEmails = this.orderValuesByPrimary(
+      uniqueEmails,
+      primaryContact.email,
+    );
+
+    const orderedPhoneNumbers = this.orderValuesByPrimary(
+      uniquePhoneNumbers,
+      primaryContact.phoneNumber,
+    );
 
     return {
       contact: {
         primaryContatctId: primaryContact.id,
-        emails: [
-          primaryContact.email,
-          ...emails.filter((e) => e !== primaryContact.email),
-        ],
-        phoneNumbers: [
-          primaryContact.phoneNumber,
-          ...phoneNumbers.filter((p) => p !== primaryContact.phoneNumber),
-        ],
+        emails: orderedEmails,
+        phoneNumbers: orderedPhoneNumbers,
         secondaryContactIds,
       },
     };
+  }
+
+  private extractUniqueValues(
+    contacts: Contact[],
+    property: keyof Contact,
+  ): string[] {
+    return Array.from(
+      new Set(
+        contacts.map((contact) => contact[property] as string).filter(Boolean),
+      ),
+    );
+  }
+
+  private orderValuesByPrimary(
+    values: string[],
+    primaryValue?: string,
+  ): string[] {
+    if (!primaryValue) {
+      return values;
+    }
+
+    return [primaryValue, ...values.filter((value) => value !== primaryValue)];
   }
 }
